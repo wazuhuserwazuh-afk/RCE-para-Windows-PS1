@@ -2,7 +2,7 @@
 Una version modificada de una que encontre en otro repositorio
 
 
-La version funcional es shell.ps1, las otra versiones las deje para volver e intentar hacerlas funcionar, de igual forma puedes modificarlas.
+La versiones funcionales son shell.ps1 y shell2.ps1, las otra versiones las deje para volver e intentar hacerlas funcionar, de igual forma puedes modificarlas.
 
 
 Ignorar esta parte
